@@ -5,12 +5,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import logging
+import requests as rq
 
 MAX_RSI_VALUE = 100
 BASE_RS = 1
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 def load_stock_data(ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
     try:
@@ -23,10 +23,8 @@ def load_stock_data(ticker: str, start_date: datetime, end_date: datetime) -> pd
         st.error(f"An error occurred while loading data for {ticker}. Please try again.")
         return pd.DataFrame()
 
-
 def get_stock_history(ticker, start_date, end_date):
     return yf.Ticker(ticker).history(start=start_date, end=end_date)
-
 
 def validate_stock_data(data: pd.DataFrame, ticker: str) -> bool:
     if data.empty:
@@ -34,17 +32,14 @@ def validate_stock_data(data: pd.DataFrame, ticker: str) -> bool:
         return False
     return True
 
-
 def calculate_moving_averages(data: pd.DataFrame) -> pd.DataFrame:
     data = add_moving_average(data, 20)
     data = add_moving_average(data, 50)
     return data
 
-
 def add_moving_average(data: pd.DataFrame, period: int):
     data[f"SMA_{period}"] = data['Close'].rolling(window=period).mean()
     return data
-
 
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     delta = data['Close'].diff()
@@ -53,7 +48,6 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     rs = gain / loss
     data['RSI'] = MAX_RSI_VALUE - (MAX_RSI_VALUE / (BASE_RS + rs))
     return data
-
 
 def sma_crossover_strategy(data: pd.DataFrame) -> pd.DataFrame:
     data = data.copy()
@@ -66,22 +60,20 @@ def sma_crossover_strategy(data: pd.DataFrame) -> pd.DataFrame:
     data['Cumulative Strategy Return'] = (1 + data['Strategy Return'].fillna(0)).cumprod() - 1
     return data
 
-
-def create_comparison_chart(ticker_data: dict) -> go.Figure:
+def create_comparison_chart(ticker_data: dict, data_type: str) -> go.Figure:
     fig = go.Figure()
     for ticker, data in ticker_data.items():
         fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name=f"{ticker} Close Price"))
         fig.add_trace(go.Scatter(x=data.index, y=data['SMA_20'], name=f"{ticker} 20-day SMA"))
         fig.add_trace(go.Scatter(x=data.index, y=data['SMA_50'], name=f"{ticker} 50-day SMA"))
     fig.update_layout(
-        title="Stock Price and Moving Averages Comparison",
+        title="Stock Price and Moving Averages Comparison" if data_type == "Stocks" else "Crypto Price and Moving Averages Comparison",
         xaxis_title="Date",
         yaxis_title="Price",
         legend_title="Indicators",
         hovermode="x unified"
     )
     return fig
-
 
 def create_comparison_rsi_chart(ticker_data: dict) -> go.Figure:
     fig = go.Figure()
@@ -98,42 +90,90 @@ def create_comparison_rsi_chart(ticker_data: dict) -> go.Figure:
     )
     return fig
 
+def fetch_crypto_data(crypto_id, days=90):
+    url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart"
+    params = {"vs_currency": "usd", "days": days, "interval": "daily"}
+    try:
+        response = rq.get(url, params=params)
+        data = response.json()
+        prices = data["prices"]
+        df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+        df.set_index("Date", inplace=True)
+        df.drop("Timestamp", axis=1, inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Error fetching crypto data: {e}")
+        return pd.DataFrame()
+
+st.markdown("""
+    <style>
+    .stSelectbox:hover {
+        cursor: pointer !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 def main():
     st.set_page_config(page_title="Advanced Stock Market Analyzer", layout="wide")
     st.title("Advanced Stock Market Analyzer")
 
     st.sidebar.header("Input Parameters")
-    tickers = st.sidebar.text_area("Enter stock tickers (separated by commas):", value="AAPL, MSFT").upper().split(',')
-    start_date = st.sidebar.date_input("Start date", value=datetime.now() - timedelta(days=365))
-    end_date = st.sidebar.date_input("End date", value=datetime.now())
+    data_type = st.sidebar.selectbox("Select Asset Type:", ["Stocks", "Cryptocurrency"])
+
+    if data_type == "Stocks":
+        tickers = [t.strip() for t in st.sidebar.text_area("Enter stock tickers (comma-separated):", value="AAPL, MSFT").upper().split(',') if t.strip()]
+        start_date = st.sidebar.date_input("Start date", value=datetime.now() - timedelta(days=365))
+        end_date = st.sidebar.date_input("End date", value=datetime.now())
+    else:
+        crypto_options = {
+            "Bitcoin (BTC)": "bitcoin",
+            "Ethereum (ETH)": "ethereum",
+            "Dogecoin (DOGE)": "dogecoin",
+        }
+        crypto_names = list(crypto_options.keys())
+        selected_crypto = st.sidebar.selectbox("Choose Cryptocurrency:", crypto_names)
+        crypto_id = crypto_options[selected_crypto]
+        crypto_days = st.sidebar.slider("Days of historical data", min_value=30, max_value=365, value=180)
 
     if st.sidebar.button("Analyze"):
         ticker_data = {}
-        for ticker in tickers:
-            ticker = ticker.strip()
-            if not ticker:
-                continue
 
-            logging.info(f"Analyzing stock: {ticker} from {start_date} to {end_date}")
-            data = load_stock_data(ticker, start_date, end_date)
+        if data_type == "Stocks":
+            for ticker in tickers:
+                logging.info(f"Analyzing stock: {ticker} from {start_date} to {end_date}")
+                data = load_stock_data(ticker, start_date, end_date)
+                if not data.empty:
+                    data = calculate_moving_averages(data)
+                    data = calculate_rsi(data)
+                    data = sma_crossover_strategy(data)
+                    ticker_data[ticker] = data
+        else:
+            data = fetch_crypto_data(crypto_id, days=crypto_days)
             if not data.empty:
                 data = calculate_moving_averages(data)
                 data = calculate_rsi(data)
                 data = sma_crossover_strategy(data)
-                ticker_data[ticker] = data
+                ticker_data[selected_crypto] = data
 
         if ticker_data:
-            price_chart = create_comparison_chart(ticker_data)
+            price_chart = create_comparison_chart(ticker_data, data_type)
             st.plotly_chart(price_chart, use_container_width=True)
 
             rsi_chart = create_comparison_rsi_chart(ticker_data)
             st.plotly_chart(rsi_chart, use_container_width=True)
 
             st.subheader("Recent Data")
-            for ticker, data in ticker_data.items():
-                st.write(f"**{ticker}** Stock Analysis")
-                st.dataframe(data.tail().style.format({'Close': '${:.2f}', 'SMA_20': '${:.2f}', 'SMA_50': '${:.2f}', 'RSI': '{:.2f}'}))
+            for name, data in ticker_data.items():
+                st.write(f"**{name}** Analysis")
+
+                price_fmt = '${:.2f}' if data_type == "Stocks" else '{:.2f}'
+                st.dataframe(data.tail().style.format({
+                    'Close': price_fmt,
+                    'SMA_20': '{:.2f}',
+                    'SMA_50': '{:.2f}',
+                    'RSI': '{:.2f}'
+                }))
 
                 last_close = data['Close'].iloc[-1]
                 sma_20 = data['SMA_20'].iloc[-1]
@@ -141,39 +181,39 @@ def main():
                 rsi = data['RSI'].iloc[-1]
 
                 if last_close > sma_20 > sma_50:
-                    st.write(f"{ticker}: The stock is in an **uptrend**. The current price is above both the 20-day and 50-day SMAs.")
+                    st.write(f"{name}: **Uptrend** - Price above both SMAs.")
                 elif last_close < sma_20 < sma_50:
-                    st.write(f"{ticker}: The stock is in a **downtrend**. The current price is below both the 20-day and 50-day SMAs.")
+                    st.write(f"{name}: **Downtrend** - Price below both SMAs.")
                 else:
-                    st.write(f"{ticker}: The stock is showing **mixed signals**. Consider additional indicators for a clearer picture.")
+                    st.write(f"{name}: **Mixed signals**.")
 
                 if rsi > 70:
-                    st.write(f"{ticker}: The RSI indicates that the stock may be **overbought**.")
+                    st.write(f"{name}: RSI indicates **Overbought**.")
                 elif rsi < 30:
-                    st.write(f"{ticker}: The RSI indicates that the stock may be **oversold**.")
+                    st.write(f"{name}: RSI indicates **Oversold**.")
                 else:
-                    st.write(f"{ticker}: The RSI is **neutral**, indicating neither overbought nor oversold conditions.")
+                    st.write(f"{name}: RSI is **Neutral**, indicating neither overbought nor oversold conditions.")
 
                 final_strategy_return = data['Cumulative Strategy Return'].iloc[-1] * 100
                 final_market_return = data['Cumulative Market Return'].iloc[-1] * 100
-                num_trades = data['Position'].abs().sum()
+                num_trades = data['Position'].abs().sum() if 'Position' in data.columns else "N/A"
 
-                st.write(f"**{ticker} SMA Crossover Strategy Performance:**")
+                st.write(f"**{name} SMA Crossover Strategy Performance:**")
                 st.write(f"- Total Strategy Return: {final_strategy_return:.2f}%")
                 st.write(f"- Total Market Return: {final_market_return:.2f}%")
-                st.write(f"- Number of Trades Executed: {int(num_trades)}")
+                st.write(f"- Number of Trades Executed: {num_trades}")
+    
 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=data.index, y=data['Cumulative Market Return'], name="Market Return"))
                 fig.add_trace(go.Scatter(x=data.index, y=data['Cumulative Strategy Return'], name="Strategy Return"))
                 fig.update_layout(
-                    title=f"{ticker} Cumulative Returns: Market vs SMA Crossover Strategy",
+                    title=f"{name} Cumulative Returns: Market vs SMA Crossover Strategy",
                     xaxis_title="Date",
                     yaxis_title="Cumulative Return",
                     hovermode="x unified"
                 )
                 st.plotly_chart(fig, use_container_width=True)
-
 
 if __name__ == "__main__":
     main()
