@@ -106,16 +106,17 @@ def fetch_crypto_data(crypto_id, days=90):
         st.error(f"Error fetching crypto data: {e}")
         return pd.DataFrame()
 
-st.markdown("""
+
+
+def main():
+    st.set_page_config(page_title="Advanced Stock Market Analyzer", layout="wide")
+    st.markdown("""
     <style>
     .stSelectbox:hover {
         cursor: pointer !important;
     }
     </style>
 """, unsafe_allow_html=True)
-
-def main():
-    st.set_page_config(page_title="Advanced Stock Market Analyzer", layout="wide")
     st.title("Advanced Stock Market Analyzer")
 
     st.sidebar.header("Input Parameters")
